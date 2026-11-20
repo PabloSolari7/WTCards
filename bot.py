@@ -9,7 +9,7 @@ from aiogram.types import Message
 # --- ВСТАВЬТЕ ВАШИ ДАННЫЕ НИЖЕ ---
 TOKEN = "9201193460:AAH_ip4vvxrotIRNKNxjQF6His3TeLu-X4I"
 ADMIN_ID = 1563482370 # СЮДА ВСТАВЬТЕ ВАШ ID (БЕЗ КАВЫЧЕК!)
-COOLDOWN = 4 * 3600   # Перезарядка крутки (4 часа)
+COOLDOWN = 1 * 3600   # Перезарядка крутки (1 час)
 # --------------------------------
 
 bot = Bot(token=TOKEN)
@@ -52,12 +52,16 @@ async def add_card(message: Message):
         return
     try:
         raw_text = message.caption.replace("/add", "", 1).strip()
-        name, rarity, points, weight = [item.strip() for item in raw_text.split("|")]
-        photo_id = message.photo[-1].file_id
+        parts = raw_text.split("|")
+        name = parts.pop(0).strip()
+        rarity = parts.pop(0).strip()
+        points = int(parts.pop(0).strip())
+        weight = int(parts.pop(0).strip())
+        photo_id = message.photo.pop().file_id
 
         cur.execute(
             "INSERT INTO cards (name, rarity, points, file_id, weight) VALUES (?, ?, ?, ?, ?)",
-            (name, rarity, int(points), photo_id, int(weight))
+            (name, rarity, points, photo_id, weight)
         )
         conn.commit()
         await message.reply(f"✅ Карточка добавлена!\n🚜 **{name}** | {rarity} | +{points} очк.", parse_mode="Markdown")
@@ -78,8 +82,10 @@ async def list_cards(message: Message):
     rows = cur.fetchall()
     if not rows:
         return await message.reply("База карточек пуста.")
-    text = "\n".join([f"🆔 **{r}** — {r} ({r}) | +{r} очк. | шанс: {r}" for r in rows])
-    await message.reply(f"📋 **Список карточек:**\n\n{text}", parse_mode="Markdown")
+    lines = []
+    for cid, name, rarity, pts, weight in rows:
+        lines.append(f"🆔 {cid} — {name} ({rarity}) | +{pts} очк. | шанс: {weight}")
+    await message.reply("📋 Список карточек:\n\n" + "\n".join(lines))
 
 # Удаление карточки по ID (ТОЛЬКО ДЛЯ АДМИНА)
 @dp.message(Command("del"))
@@ -87,14 +93,17 @@ async def delete_card(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
     parts = message.text.split()
-    if len(parts) < 2 or not parts.isdigit():
-        return await message.reply("Укажите номер карточки, например: `/del 1`", parse_mode="Markdown")
+    if len(parts) < 2:
+        return await message.reply("Укажите номер карточки, например: /del 1")
+    num_str = parts.pop(1)
+    if not num_str.isdigit():
+        return await message.reply("Номер должен быть числом, например: /del 1")
     
-    card_id = int(parts)
+    card_id = int(num_str)
     cur.execute("DELETE FROM cards WHERE id = ?", (card_id,))
     cur.execute("DELETE FROM inventory WHERE card_id = ?", (card_id,))
     conn.commit()
-    await message.reply(f"🗑 Карточка **#{card_id}** удалена!", parse_mode="Markdown")
+    await message.reply(f"🗑 Карточка #{card_id} удалена!")
 
 # Выбивание танка (крутка)
 @dp.message(Command("tank"))
@@ -109,7 +118,7 @@ async def spin_tank(message: Message):
         return await message.reply("⚙️ В базе пока нет танков. Админ скоро добавит карточки!")
 
     cur.execute("SELECT last_spin FROM users WHERE user_id = ?", (uid,))
-    last_spin = cur.fetchone()
+    last_spin, = cur.fetchone()
     now = int(time.time())
 
     if now - last_spin < COOLDOWN:
@@ -117,8 +126,9 @@ async def spin_tank(message: Message):
         hours, mins = rem // 3600, (rem % 3600) // 60
         return await message.reply(f"⏳ Перезарядка! Следующий танк через **{hours} ч. {mins} мин.**", parse_mode="Markdown")
 
-    chosen = random.choices(all_cards, weights=[c for c in all_cards], k=1)
-    card_id, name, rarity, pts, file_id, _ = chosen
+    weights_list = [w for _, _, _, _, _, w in all_cards]
+    chosen_list = random.choices(all_cards, weights=weights_list, k=1)
+    card_id, name, rarity, pts, file_id, _ = chosen_list.pop()
 
     cur.execute("UPDATE users SET last_spin = ?, points = points + ? WHERE user_id = ?", (now, pts, uid))
     cur.execute("INSERT INTO inventory (user_id, card_id) VALUES (?, ?)", (uid, card_id))
@@ -140,7 +150,7 @@ async def my_hangar(message: Message):
     register_user(uid, message.from_user.first_name)
 
     cur.execute("SELECT points FROM users WHERE user_id = ?", (uid,))
-    points = cur.fetchone()
+    points, = cur.fetchone()
 
     cur.execute("""
         SELECT c.name, c.rarity, COUNT(i.card_id)
@@ -148,7 +158,8 @@ async def my_hangar(message: Message):
         WHERE i.user_id = ? GROUP BY c.id
     """, (uid,))
     rows = cur.fetchall()
-    inv_text = "\n".join([f"• **{r}** ({r}) — {r} шт." for r in rows]) or "Пока пусто. Напишите «танк»!"
+    inv_lines = [f"• **{name}** ({rarity}) — {cnt} шт." for name, rarity, cnt in rows]
+    inv_text = "\n".join(inv_lines) or "Пока пусто. Напишите «танк»!"
 
     text = f"👤 **Танкист:** {message.from_user.first_name}\n🏆 **Очки:** {points}\n\n🚜 **Ваш ангар:**\n{inv_text}"
     await message.reply(text, parse_mode="Markdown")
@@ -159,7 +170,8 @@ async def my_hangar(message: Message):
 async def top_players(message: Message):
     cur.execute("SELECT username, points FROM users ORDER BY points DESC LIMIT 10")
     rows = cur.fetchall()
-    top_text = "\n".join([f"{i+1}. **{r}** — {r} очк." for i, r in enumerate(rows)]) or "Рейтинг пуст."
+    top_lines = [f"{i+1}. **{uname}** — {pts} очк." for i, (uname, pts) in enumerate(rows)]
+    top_text = "\n".join(top_lines) or "Рейтинг пуст."
     await message.reply(f"🏆 **Топ-10 танкистов:**\n\n{top_text}", parse_mode="Markdown")
 
 async def main():
