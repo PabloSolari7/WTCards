@@ -8,7 +8,7 @@ from aiogram.types import Message
 
 # --- ВСТАВЬТЕ ВАШИ ДАННЫЕ НИЖЕ ---
 TOKEN = "9201193460:AAH_ip4vvxrotIRNKNxjQF6His3TeLu-X4I"
-ADMIN_ID = 1563482370 # СЮДА ВСТАВЬТЕ ВАШ ID (БЕЗ КАВЫЧЕК!)
+ADMIN_ID = 1563482370  # СЮДА ВСТАВЬТЕ ВАШ ID (БЕЗ КАВЫЧЕК!)
 DEFAULT_COOLDOWN = 60 # Перезарядка по умолчанию (в минутах)
 # --------------------------------
 
@@ -22,8 +22,20 @@ cur.execute("""CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY, username TEXT, points INTEGER DEFAULT 0, last_spin INTEGER DEFAULT 0
 )""")
 cur.execute("""CREATE TABLE IF NOT EXISTS cards (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, rarity TEXT, points INTEGER, file_id TEXT, weight INTEGER
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    nation TEXT DEFAULT 'Не указана',
+    rarity TEXT,
+    points INTEGER,
+    file_id TEXT,
+    weight INTEGER
 )""")
+# Если загружена старая база без колонки nation, аккуратно добавляем её
+try:
+    cur.execute("ALTER TABLE cards ADD COLUMN nation TEXT DEFAULT 'Не указана'")
+except sqlite3.OperationalError:
+    pass
+
 cur.execute("""CREATE TABLE IF NOT EXISTS inventory (
     user_id INTEGER, card_id INTEGER
 )""")
@@ -54,8 +66,6 @@ async def cmd_start(message: Message):
         parse_mode="Markdown"
     )
 
-
-
 # Изменение перезарядки в минутах (ТОЛЬКО ДЛЯ АДМИНА)
 @dp.message(Command("cd"))
 async def set_cooldown(message: Message):
@@ -75,7 +85,7 @@ async def set_cooldown(message: Message):
     conn.commit()
     await message.reply(f"✅ Новая перезарядка установлена: **{new_mins} мин.**", parse_mode="Markdown")
 
-# Добавление карточки (ТОЛЬКО ДЛЯ АДМИНА)
+# Добавление карточки с НАЦИЕЙ (ТОЛЬКО ДЛЯ АДМИНА)
 @dp.message(F.photo, F.caption.startswith("/add"))
 async def add_card(message: Message):
     if message.from_user.id != ADMIN_ID:
@@ -84,22 +94,27 @@ async def add_card(message: Message):
         raw_text = message.caption.replace("/add", "", 1).strip()
         parts = raw_text.split("|")
         name = parts.pop(0).strip()
+        nation = parts.pop(0).strip()
         rarity = parts.pop(0).strip()
         points = int(parts.pop(0).strip())
         weight = int(parts.pop(0).strip())
         photo_id = message.photo.pop().file_id
 
         cur.execute(
-            "INSERT INTO cards (name, rarity, points, file_id, weight) VALUES (?, ?, ?, ?, ?)",
-            (name, rarity, points, photo_id, weight)
+            "INSERT INTO cards (name, nation, rarity, points, file_id, weight) VALUES (?, ?, ?, ?, ?, ?)",
+            (name, nation, rarity, points, photo_id, weight)
         )
         conn.commit()
-        await message.reply(f"✅ Карточка добавлена!\n🚜 **{name}** | {rarity} | +{points} очк.", parse_mode="Markdown")
+        await message.reply(
+            f"✅ Карточка добавлена!\n"
+            f"🚜 **{name}** | {nation} | {rarity} | +{points} очк.",
+            parse_mode="Markdown"
+        )
     except Exception:
         await message.reply(
-            "❌ Ошибка! Прикрепите фото и напишите в подписи:\n"
-            "`/add Название | Редкость | Очки | Шанс`\n\n"
-            "Пример:\n`/add Т-34-85 | Обычный ⚪️ | 100 | 95`",
+            "❌ Ошибка! Прикрепите фото и напишите в подписи 5 параметров:\n"
+            "`/add Название | Нация | Редкость | Очки | Шанс`\n\n"
+            "Пример:\n`/add Т-34-85 | СССР 🚩 | Обычный ⚪️ | 100 | 95`",
             parse_mode="Markdown"
         )
 
@@ -108,13 +123,13 @@ async def add_card(message: Message):
 async def list_cards(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
-    cur.execute("SELECT id, name, rarity, points, weight FROM cards")
+    cur.execute("SELECT id, name, nation, rarity, points, weight FROM cards")
     rows = cur.fetchall()
     if not rows:
         return await message.reply("База карточек пуста.")
     lines = []
-    for cid, name, rarity, pts, weight in rows:
-        lines.append(f"🆔 {cid} — {name} ({rarity}) | +{pts} очк. | шанс: {weight}")
+    for cid, name, nation, rarity, pts, weight in rows:
+        lines.append(f"🆔 {cid} — {name} [{nation}] ({rarity}) | +{pts} очк. | шанс: {weight}")
     await message.reply("📋 Список карточек:\n\n" + "\n".join(lines))
 
 # Удаление карточки по ID (ТОЛЬКО ДЛЯ АДМИНА)
@@ -142,7 +157,7 @@ async def spin_tank(message: Message):
     uid = message.from_user.id
     register_user(uid, message.from_user.first_name)
 
-    cur.execute("SELECT id, name, rarity, points, file_id, weight FROM cards")
+    cur.execute("SELECT id, name, nation, rarity, points, file_id, weight FROM cards")
     all_cards = cur.fetchall()
     if not all_cards:
         return await message.reply("⚙️ В базе пока нет танков. Админ скоро добавит карточки!")
@@ -164,9 +179,9 @@ async def spin_tank(message: Message):
             time_str = f"{secs} сек."
         return await message.reply(f"⏳ Перезарядка! Следующий танк через **{time_str}**", parse_mode="Markdown")
 
-    weights_list = [w for _, _, _, _, _, w in all_cards]
+    weights_list = [w for _, _, _, _, _, _, w in all_cards]
     chosen_list = random.choices(all_cards, weights=weights_list, k=1)
-    card_id, name, rarity, pts, file_id, _ = chosen_list.pop()
+    card_id, name, nation, rarity, pts, file_id, _ = chosen_list.pop()
 
     cur.execute("UPDATE users SET last_spin = ?, points = points + ? WHERE user_id = ?", (now, pts, uid))
     cur.execute("INSERT INTO inventory (user_id, card_id) VALUES (?, ?)", (uid, card_id))
@@ -175,6 +190,7 @@ async def spin_tank(message: Message):
     caption = (
         f"🎖 **Новая боевая машина!**\n\n"
         f"🚜 **Техника:** {name}\n"
+        f"🌍 **Нация:** {nation}\n"
         f"✨ **Редкость:** {rarity}\n"
         f"🏆 **Очки:** +{pts}"
     )
@@ -191,12 +207,12 @@ async def my_hangar(message: Message):
     points, = cur.fetchone()
 
     cur.execute("""
-        SELECT c.name, c.rarity, COUNT(i.card_id)
+        SELECT c.name, c.nation, c.rarity, COUNT(i.card_id)
         FROM inventory i JOIN cards c ON i.card_id = c.id
         WHERE i.user_id = ? GROUP BY c.id
     """, (uid,))
     rows = cur.fetchall()
-    inv_lines = [f"• **{name}** ({rarity}) — {cnt} шт." for name, rarity, cnt in rows]
+    inv_lines = [f"• **{name}** [{nation}] ({rarity}) — {cnt} шт." for name, nation, rarity, cnt in rows]
     inv_text = "\n".join(inv_lines) or "Пока пусто. Напишите «танк»!"
 
     text = f"👤 **Танкист:** {message.from_user.first_name}\n🏆 **Очки:** {points}\n\n🚜 **Ваш ангар:**\n{inv_text}"
