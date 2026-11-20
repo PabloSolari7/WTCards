@@ -7,9 +7,9 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 # --- ВСТАВЬТЕ ВАШИ ДАННЫЕ НИЖЕ ---
-TOKEN = "СЮДА_ВСТАВЬТЕ_ТОКЕН"
-ADMIN_ID = 123456789  # СЮДА ВСТАВЬТЕ ВАШ ID (БЕЗ КАВЫЧЕК!)
-DEFAULT_COOLDOWN = 60 # Перезарядка по умолчанию (в минутах)
+TOKEN = "9201193460:AAH_ip4vvxrotIRNKNxjQF6His3TeLu-X4I"
+ADMIN_ID = 1563482370  # СЮДА ВСТАВЬТЕ ВАШ ID (БЕЗ КАВЫЧЕК!)
+DEFAULT_COOLDOWN = 30 # Перезарядка по умолчанию (в минутах)
 # --------------------------------
 
 bot = Bot(token=TOKEN)
