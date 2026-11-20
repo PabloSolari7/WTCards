@@ -7,8 +7,8 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 # --- ВСТАВЬТЕ ВАШИ ДАННЫЕ НИЖЕ ---
-TOKEN = "9201193460:AAH_ip4vvxrotIRNKNxjQF6His3TeLu-X4I"
-ADMIN_ID = 1563482370  # СЮДА ВСТАВЬТЕ ВАШ ID (БЕЗ КАВЫЧЕК!)
+TOKEN = "СЮДА_ВСТАВЬТЕ_ТОКЕН"
+ADMIN_ID = 123456789  # СЮДА ВСТАВЬТЕ ВАШ ID (БЕЗ КАВЫЧЕК!)
 DEFAULT_COOLDOWN = 60 # Перезарядка по умолчанию (в минутах)
 # --------------------------------
 
@@ -30,7 +30,7 @@ cur.execute("""CREATE TABLE IF NOT EXISTS cards (
     file_id TEXT,
     weight INTEGER
 )""")
-# Если загружена старая база без колонки nation, аккуратно добавляем её
+# Аккуратно добавляем колонку nation в старую базу, если её там ещё нет
 try:
     cur.execute("ALTER TABLE cards ADD COLUMN nation TEXT DEFAULT 'Не указана'")
 except sqlite3.OperationalError:
@@ -58,7 +58,7 @@ def register_user(user_id: int, username: str):
 async def cmd_start(message: Message):
     register_user(message.from_user.id, message.from_user.first_name)
     await message.reply(
-        "🎖 **Добро пожаловать в WTCards!**\n\n"
+        "🎖 **Добро пожаловать в Tank Cards!**\n\n"
         "Доступные команды:\n"
         "• `танк` или `/tank` — получить случайный танк\n"
         "• `ангар` или `/profile` — посмотреть коллекцию и очки\n"
@@ -85,7 +85,7 @@ async def set_cooldown(message: Message):
     conn.commit()
     await message.reply(f"✅ Новая перезарядка установлена: **{new_mins} мин.**", parse_mode="Markdown")
 
-# Добавление карточки с НАЦИЕЙ (ТОЛЬКО ДЛЯ АДМИНА)
+# Добавление новой карточки (ТОЛЬКО ДЛЯ АДМИНА)
 @dp.message(F.photo, F.caption.startswith("/add"))
 async def add_card(message: Message):
     if message.from_user.id != ADMIN_ID:
@@ -115,6 +115,56 @@ async def add_card(message: Message):
             "❌ Ошибка! Прикрепите фото и напишите в подписи 5 параметров:\n"
             "`/add Название | Нация | Редкость | Очки | Шанс`\n\n"
             "Пример:\n`/add Т-34-85 | СССР 🚩 | Обычный ⚪️ | 100 | 95`",
+            parse_mode="Markdown"
+        )
+
+# Быстрая установка/смена НАЦИИ по ID карточки (ТОЛЬКО ДЛЯ АДМИНА)
+@dp.message(Command("nation"))
+async def set_nation(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3 or not parts[1].isdigit():
+        return await message.reply(
+            "Укажите ID карточки и нацию, например:\n`/nation 1 СССР 🚩`",
+            parse_mode="Markdown"
+        )
+    card_id = int(parts[1])
+    new_nation = parts[2].strip()
+    cur.execute("UPDATE cards SET nation = ? WHERE id = ?", (new_nation, card_id))
+    conn.commit()
+    await message.reply(f"🌍 Нация карточки **#{card_id}** обновлена на: **{new_nation}**", parse_mode="Markdown")
+
+# Полное редактирование карточки по ID (ТОЛЬКО ДЛЯ АДМИНА)
+@dp.message(Command("edit"))
+async def edit_card(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        raw_text = message.text.replace("/edit", "", 1).strip()
+        parts = raw_text.split("|")
+        card_id = int(parts.pop(0).strip())
+        name = parts.pop(0).strip()
+        nation = parts.pop(0).strip()
+        rarity = parts.pop(0).strip()
+        points = int(parts.pop(0).strip())
+        weight = int(parts.pop(0).strip())
+
+        cur.execute(
+            "UPDATE cards SET name = ?, nation = ?, rarity = ?, points = ?, weight = ? WHERE id = ?",
+            (name, nation, rarity, points, weight, card_id)
+        )
+        conn.commit()
+        await message.reply(
+            f"✏️ Карточка **#{card_id}** обновлена!\n"
+            f"🚜 **{name}** | {nation} | {rarity} | +{points} очк. | шанс: {weight}",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        await message.reply(
+            "❌ Ошибка формата! Пишите так:\n"
+            "`/edit ID | Название | Нация | Редкость | Очки | Шанс`\n\n"
+            "Пример:\n`/edit 1 | Т-34-85 | СССР 🚩 | Обычный ⚪️ | 150 | 95`",
             parse_mode="Markdown"
         )
 
@@ -211,7 +261,7 @@ async def my_hangar(message: Message):
         FROM inventory i JOIN cards c ON i.card_id = c.id
         WHERE i.user_id = ? GROUP BY c.id
     """, (uid,))
-    rows = cur.fetchall()
+    rows = cur.fetchall() 
     inv_lines = [f"• **{name}** [{nation}] ({rarity}) — {cnt} шт." for name, nation, rarity, cnt in rows]
     inv_text = "\n".join(inv_lines) or "Пока пусто. Напишите «танк»!"
 
