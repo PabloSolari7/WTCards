@@ -46,10 +46,14 @@ def register_user(user_id: int, username: str):
 async def cmd_start(message: Message):
     register_user(message.from_user.id, message.from_user.first_name)
     await message.reply(
-        "Доброго времени суток сударь. 
-        Чтобы получить карточку, пропишите /tank",
+        "🎖 **Добро пожаловать в WTCards!**\n\n"
+        "Доступные команды:\n"
+        "• `танк` или `/tank` — получить случайный танк\n"
+        "• `ангар` или `/profile` — посмотреть коллекцию и очки\n"
+        "• `топ` или `/top` — рейтинг игроков",
         parse_mode="Markdown"
     )
+
 
 
 # Изменение перезарядки в минутах (ТОЛЬКО ДЛЯ АДМИНА)
