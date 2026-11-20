@@ -46,13 +46,11 @@ def register_user(user_id: int, username: str):
 async def cmd_start(message: Message):
     register_user(message.from_user.id, message.from_user.first_name)
     await message.reply(
-        "🎖 **Добро пожаловать в Tank Cards!**\n\n"
-        "Доступные команды:\n"
-        "• `танк` или `/tank` — получить случайный танк\n"
-        "• `ангар` или `/profile` — посмотреть коллекцию и очки\n"
-        "• `топ` или `/top` — рейтинг игроков",
+        "Доброго времени суток сударь. 
+        Чтобы получить карточку, пропишите /tank",
         parse_mode="Markdown"
     )
+
 
 # Изменение перезарядки в минутах (ТОЛЬКО ДЛЯ АДМИНА)
 @dp.message(Command("cd"))
