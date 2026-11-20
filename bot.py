@@ -9,7 +9,7 @@ from aiogram.types import Message
 # --- ВСТАВЬТЕ ВАШИ ДАННЫЕ НИЖЕ ---
 TOKEN = "9201193460:AAH_ip4vvxrotIRNKNxjQF6His3TeLu-X4I"
 ADMIN_ID = 1563482370 # СЮДА ВСТАВЬТЕ ВАШ ID (БЕЗ КАВЫЧЕК!)
-COOLDOWN = 1 * 3600   # Перезарядка крутки (1 час)
+DEFAULT_COOLDOWN = 60 # Перезарядка по умолчанию (в минутах)
 # --------------------------------
 
 bot = Bot(token=TOKEN)
@@ -27,7 +27,16 @@ cur.execute("""CREATE TABLE IF NOT EXISTS cards (
 cur.execute("""CREATE TABLE IF NOT EXISTS inventory (
     user_id INTEGER, card_id INTEGER
 )""")
+cur.execute("""CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY, value INTEGER
+)""")
+cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('cooldown_mins', ?)", (DEFAULT_COOLDOWN,))
 conn.commit()
+
+def get_cooldown_seconds() -> int:
+    cur.execute("SELECT value FROM settings WHERE key = 'cooldown_mins'")
+    mins, = cur.fetchone()
+    return mins * 60
 
 def register_user(user_id: int, username: str):
     cur.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username or "Танкист"))
@@ -44,6 +53,25 @@ async def cmd_start(message: Message):
         "• `топ` или `/top` — рейтинг игроков",
         parse_mode="Markdown"
     )
+
+# Изменение перезарядки в минутах (ТОЛЬКО ДЛЯ АДМИНА)
+@dp.message(Command("cd"))
+async def set_cooldown(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.split()
+    if len(parts) < 2:
+        cur_mins = get_cooldown_seconds() // 60
+        return await message.reply(f"⏱ Текущий кулдаун: **{cur_mins} мин.**\nЧтобы изменить, напишите: `/cd 30`", parse_mode="Markdown")
+    
+    num_str = parts.pop(1)
+    if not num_str.isdigit():
+        return await message.reply("Укажите время в минутах числом, например: `/cd 15`", parse_mode="Markdown")
+    
+    new_mins = int(num_str)
+    cur.execute("UPDATE settings SET value = ? WHERE key = 'cooldown_mins'", (new_mins,))
+    conn.commit()
+    await message.reply(f"✅ Новая перезарядка установлена: **{new_mins} мин.**", parse_mode="Markdown")
 
 # Добавление карточки (ТОЛЬКО ДЛЯ АДМИНА)
 @dp.message(F.photo, F.caption.startswith("/add"))
@@ -69,7 +97,7 @@ async def add_card(message: Message):
         await message.reply(
             "❌ Ошибка! Прикрепите фото и напишите в подписи:\n"
             "`/add Название | Редкость | Очки | Шанс`\n\n"
-            "Пример:\n`/add Т-34-85 | Обычный ⚪️ | 100 | 50`",
+            "Пример:\n`/add Т-34-85 | Обычный ⚪️ | 100 | 95`",
             parse_mode="Markdown"
         )
 
@@ -120,11 +148,19 @@ async def spin_tank(message: Message):
     cur.execute("SELECT last_spin FROM users WHERE user_id = ?", (uid,))
     last_spin, = cur.fetchone()
     now = int(time.time())
+    cooldown_sec = get_cooldown_seconds()
 
-    if now - last_spin < COOLDOWN:
-        rem = COOLDOWN - (now - last_spin)
+    if now - last_spin < cooldown_sec:
+        rem = cooldown_sec - (now - last_spin)
         hours, mins = rem // 3600, (rem % 3600) // 60
-        return await message.reply(f"⏳ Перезарядка! Следующий танк через **{hours} ч. {mins} мин.**", parse_mode="Markdown")
+        secs = rem % 60
+        if hours > 0:
+            time_str = f"{hours} ч. {mins} мин."
+        elif mins > 0:
+            time_str = f"{mins} мин. {secs} сек."
+        else:
+            time_str = f"{secs} сек."
+        return await message.reply(f"⏳ Перезарядка! Следующий танк через **{time_str}**", parse_mode="Markdown")
 
     weights_list = [w for _, _, _, _, _, w in all_cards]
     chosen_list = random.choices(all_cards, weights=weights_list, k=1)
