@@ -38,6 +38,11 @@ try:
 except sqlite3.OperationalError:
     pass
 
+try:
+  cur.execute("ALTER TABLE users ADD COLUMN claimed_bp INTEGER DEFAULT 0")
+except sqlite3.OperationalError:
+  pass
+
 cur.execute("""CREATE TABLE IF NOT EXISTS inventory (
     user_id INTEGER, card_id INTEGER
 )""")
@@ -62,6 +67,55 @@ def get_bp_info(points: int):
     filled = int((current_in_lvl / BP_STEP) * 10)
     bar = "🟩" * filled + "⬜️" * (10 - filled)
     return level, next_lvl_pts, bar
+
+def claim_bp_rewards(uid: int, current_lvl: int):
+  cur.execute("SELECT claimed_bp FROM users WHERE user_id = ?", (uid,))
+  row = cur.fetchone()
+  claimed = row[0] if row and row[0] is not None else 0
+
+  if current_lvl <= claimed:
+    return []
+
+  cur.execute("SELECT id, name, nation, rarity FROM cards WHERE LOWER(rarity) LIKE '%редк%'")
+  rares = cur.fetchall()
+
+  cur.execute("SELECT id, name, nation, rarity FROM cards WHERE LOWER(rarity) LIKE '%эпич%'")
+  epics = cur.fetchall()
+
+  cur.execute("SELECT id, name, nation, rarity FROM cards WHERE LOWER(rarity) LIKE '%легенд%'")
+  legs = cur.fetchall()
+
+  cur.execute("SELECT id, name, nation, rarity FROM cards")
+  all_c = cur.fetchall()
+  if not all_c:
+    return []
+  if not rares:
+    rares = all_c
+  if not epics:
+    epics = all_c
+  if not legs:
+    legs = all_c
+
+  rewards_given = []
+
+  for lvl in range(claimed + 1, current_lvl + 1):
+    if lvl <= 5:
+      card = random.choice(rares)
+      tag = "🔵 РЕДКАЯ"
+    elif lvl <= 15:
+      card = random.choice(epics)
+      tag = "🟣 ЭПИЧЕСКАЯ"
+    else:
+      card = random.choice(legs)
+      tag = "🟡 ЛЕГЕНДАРНАЯ"
+    
+    cid, name, nation, rarity = card
+    cur.execute("INSERT INTO inventory (user_id, card_id) VALUES (?, ?)", (uid, cid))
+    rewards_given.append(f"• **Ур. {lvl}** ({tag}): {name} [{nation}]")
+
+  cur.execute("UPDATE users SET claimed_bp = ? WHERE user_id = ?", (current_lvl, uid))
+  conn.commit()
+  return rewards_given
 
 def register_user(user_id: int, username: str):
     cur.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username or "Танкист"))
@@ -315,27 +369,56 @@ async def top_players(message: Message):
 @dp.message(Command("bp"))
 @dp.message(F.text.lower().in_({"бп", "пропуск", "боевой пропуск"}))
 async def battle_pass(message: Message):
-    uid = message.from_user.id
-    register_user(uid, message.from_user.first_name)
+  uid = message.from_user.id
+  register_user(uid, message.from_user.first_name)
 
-    cur.execute("SELECT points FROM users WHERE user_id = ?", (uid,))
-    points, = cur.fetchone()
-    bp_lvl, next_pts, bp_bar = get_bp_info(points)
+  cur.execute("SELECT points, claimed_bp FROM users WHERE user_id = ?", (uid,))
+  points, claimed = cur.fetchone()
+  claimed = claimed or 0
+  bp_lvl, next_pts, bp_bar = get_bp_info(points)
 
-    if bp_lvl >= BP_MAX_LEVEL:
-        status_text = "🏆 Вы достигли максимального 30 уровня Боевого пропуска!"
-    else:
-        need = next_pts - points
-        status_text = f"До **{bp_lvl + 1} уровня** осталось: **{need} очк.**"
+  if bp_lvl >= BP_MAX_LEVEL:
+    status_text = "🏆 Вы достигли максимального 30 уровня Боевого пропуска!"
+  else:
+    need = next_pts - points
+    status_text = f"До **{bp_lvl + 1} уровня** осталось: **{need} очк.**"
 
-    text = (
-        f"🎖 **БОЕВОЙ ПРОПУСК (Сезон 1)**\n\n"
-        f"📊 **Ваш уровень:** {bp_lvl} из {BP_MAX_LEVEL}\n"
-        f"💰 **Всего очков:** {points} / {next_pts}\n"
-        f"{bp_bar}\n\n"
-        f"{status_text}"
-    )
-    await message.reply(text, parse_mode="Markdown")
+  unclaimed = max(0, bp_lvl - claimed)
+  reward_hint = ""
+  if unclaimed > 0:
+    reward_hint = f"\n\n🎁 **Доступно наград для получения: {unclaimed} шт.!**\nНапишите **`забрать`**, чтобы открыть их!"
+
+  text = (
+      f"🎖 **БОЕВОЙ ПРОПУСК (Сезон 1)**\n\n"
+      f"📊 **Ваш уровень:** {bp_lvl} из {BP_MAX_LEVEL}\n"
+      f"💰 **Всего очков:** {points} / {next_pts}\n"
+      f"{bp_bar}\n\n"
+      f"{status_text}{reward_hint}"
+  )
+  await message.reply(text, parse_mode="Markdown")
+
+# Получение наград Боевого пропуска
+@dp.message(Command("claim"))
+@dp.message(F.text.lower().in_({"забрать", "награда", "награды"}))
+async def claim_bp(message: Message):
+  uid = message.from_user.id
+  register_user(uid, message.from_user.first_name)
+
+  cur.execute("SELECT points FROM users WHERE user_id = ?", (uid,))
+  points, = cur.fetchone()
+  bp_lvl, _, _ = get_bp_info(points)
+
+  rewards = claim_bp_rewards(uid, bp_lvl)
+  if not rewards:
+    return await message.reply("📭 У вас пока нет несобранных наград Боевого пропуска. Крутите танки, чтобы повысить уровень!")
+
+  rewards_text = "\n".join(rewards)
+  await message.reply(
+      f"🎉 **Вы забрали награды Боевого пропуска!**\n\n"
+      f"{rewards_text}\n\n"
+      f"🚜 Все машины уже отправлены в ваш ангар!",
+      parse_mode="Markdown"
+  )
 
 
 async def main():
