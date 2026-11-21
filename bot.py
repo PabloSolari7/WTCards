@@ -484,12 +484,12 @@ def build_rarity_list_page(uid: int, r_code: str, page: int = 0):
 
 def build_rarity_menu(uid: int):
   kb_rows = []
-  for code, label, pattern in RARITY_CONFIG:
+  for code, label, pat1, pat2 in RARITY_CONFIG:
     cur.execute("""
         SELECT COUNT(DISTINCT c.id)
         FROM inventory i JOIN cards c ON i.card_id = c.id
-        WHERE i.user_id = ? AND LOWER(c.rarity) LIKE ?
-    """, (uid, pattern))
+        WHERE i.user_id = ? AND (c.rarity LIKE ? OR c.rarity LIKE ?)
+    """, (uid, pat1, pat2))
     cnt, = cur.fetchone()
     kb_rows.append([InlineKeyboardButton(text=f"{label} ({cnt} шт.)", callback_data=f"rar_list:{uid}:{code}:0")])
 
@@ -499,13 +499,13 @@ def build_rarity_menu(uid: int):
   return text, kb
 
 def build_rarity_list_page(uid: int, r_code: str, page: int = 0):
-  label, pattern = get_rarity_info(r_code)
+  label, pat1, pat2 = get_rarity_info(r_code)
   cur.execute("""
       SELECT c.id, c.name, c.nation, COUNT(i.card_id)
       FROM inventory i JOIN cards c ON i.card_id = c.id
-      WHERE i.user_id = ? AND LOWER(c.rarity) LIKE ?
+      WHERE i.user_id = ? AND (c.rarity LIKE ? OR c.rarity LIKE ?)
       GROUP BY c.id ORDER BY c.id ASC
-  """, (uid, pattern))
+  """, (uid, pat1, pat2))
   rows = cur.fetchall()
 
   if not rows:
