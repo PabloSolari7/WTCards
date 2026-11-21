@@ -358,6 +358,19 @@ async def spin_tank(message: Message):
   )
   await message.reply_photo(photo=file_id, caption=caption, parse_mode="Markdown")
 
+RARITY_CONFIG = [
+    ("common", "⚪️ Обычные", "%обыч%"),
+    ("rare", "🔵 Редкие", "%редк%"),
+    ("epic", "🟣 Эпические", "%эпич%"),
+    ("legend", "🟡 Легендарные", "%легенд%")
+]
+
+def get_rarity_info(r_code: str):
+  for code, label, pattern in RARITY_CONFIG:
+    if code == r_code:
+      return label, pattern
+  return "⚪️ Обычные", "%обыч%"
+
 def build_hangar_page(uid: int, first_name: str, page: int = 0):
   cur.execute("SELECT points FROM users WHERE user_id = ?", (uid,))
   points, = cur.fetchone()
@@ -370,7 +383,7 @@ def build_hangar_page(uid: int, first_name: str, page: int = 0):
   """, (uid,))
   rows = cur.fetchall()
 
-  per_page = 20
+  per_page = 10
   if not rows:
     inv_text = "Пока пусто. Напишите «танк»!"
     kb = None
@@ -385,12 +398,17 @@ def build_hangar_page(uid: int, first_name: str, page: int = 0):
     inv_text = "\n".join(inv_lines)
     page_header = f" (Стр. {page + 1}/{total_pages})"
 
-    buttons = []
+    nav_buttons = []
     if page > 0:
-      buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"hangar_page:{uid}:{page - 1}"))
+      nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"hangar_page:{uid}:{page - 1}"))
     if page < total_pages - 1:
-      buttons.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"hangar_page:{uid}:{page + 1}"))
-    kb = InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
+      nav_buttons.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"hangar_page:{uid}:{page + 1}"))
+
+    kb_rows = []
+    if nav_buttons:
+      kb_rows.append(nav_buttons)
+    kb_rows.append([InlineKeyboardButton(text="🖼 Посмотреть карточки", callback_data=f"rar_menu:{uid}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
   text = (
       f"👤 **Танкист:** {first_name}\n"
@@ -398,6 +416,76 @@ def build_hangar_page(uid: int, first_name: str, page: int = 0):
       f"🎖 **Боевой пропуск:** {bp_lvl}/{BP_MAX_LEVEL} ур. ({points}/{next_pts})\n"
       f"{bp_bar}\n\n"
       f"🚜 **Ваш ангар{page_header}:**\n{inv_text}"
+  )
+  return text, kb
+
+def build_rarity_menu(uid: int):
+  kb_rows = []
+  for code, label, pattern in RARITY_CONFIG:
+    cur.execute("""
+        SELECT COUNT(DISTINCT c.id)
+        FROM inventory i JOIN cards c ON i.card_id = c.id
+        WHERE i.user_id = ? AND LOWER(c.rarity) LIKE ?
+    """, (uid, pattern))
+    cnt, = cur.fetchone()
+    kb_rows.append([InlineKeyboardButton(text=f"{label} ({cnt} шт.)", callback_data=f"rar_list:{uid}:{code}:0")])
+
+  kb_rows.append([InlineKeyboardButton(text="🔙 Вернуться в профиль", callback_data=f"hangar_back:{uid}")])
+  kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+  text = "🗂 **Каталог вашей техники**\n\nВыберите редкость, чтобы открыть список машин:"
+  return text, kb
+
+def build_rarity_list_page(uid: int, r_code: str, page: int = 0):
+  label, pattern = get_rarity_info(r_code)
+  cur.execute("""
+      SELECT c.id, c.name, c.nation, COUNT(i.card_id)
+      FROM inventory i JOIN cards c ON i.card_id = c.id
+      WHERE i.user_id = ? AND LOWER(c.rarity) LIKE ?
+      GROUP BY c.id ORDER BY c.id ASC
+  """, (uid, pattern))
+  rows = cur.fetchall()
+
+  if not rows:
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 К выбору редкости", callback_data=f"rar_menu:{uid}")]
+    ])
+    return f"{label}\n\nУ вас пока нет танков этой редкости.", kb
+
+  per_page = 10
+  total_pages = (len(rows) - 1) // per_page + 1
+  page = max(0, min(page, total_pages - 1))
+  start = page * per_page
+  chunk = rows[start:start + per_page]
+
+  lines = []
+  kb_rows = []
+  temp_row = []
+
+  for idx, (cid, name, nation, cnt) in enumerate(chunk, start=start + 1):
+    lines.append(f"{idx}. **{name}** [{nation}] — {cnt} шт.")
+    btn_text = name if len(name) <= 18 else name[:16] + ".."
+    temp_row.append(InlineKeyboardButton(text=f"🚜 {btn_text}", callback_data=f"view_card:{uid}:{r_code}:{page}:{cid}"))
+    if len(temp_row) == 2:
+      kb_rows.append(temp_row)
+      temp_row = []
+
+  if temp_row:
+    kb_rows.append(temp_row)
+
+  nav_buttons = []
+  if page > 0:
+    nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"rar_list:{uid}:{r_code}:{page - 1}"))
+  if page < total_pages - 1:
+    nav_buttons.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"rar_list:{uid}:{r_code}:{page + 1}"))
+  if nav_buttons:
+    kb_rows.append(nav_buttons)
+
+  kb_rows.append([InlineKeyboardButton(text="🔙 К выбору редкости", callback_data=f"rar_menu:{uid}")])
+  kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+  text = (
+      f"{label} (Стр. {page + 1}/{total_pages})\n"
+      f"Нажмите на кнопку с названием танка, чтобы посмотреть карточку:\n\n" + "\n".join(lines)
   )
   return text, kb
 
@@ -420,6 +508,85 @@ async def cb_hangar_page(callback: CallbackQuery):
   page = int(page_str)
   text, kb = build_hangar_page(target_uid, callback.from_user.first_name, page)
   await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+  await callback.answer()
+
+@dp.callback_query(F.data.startswith("rar_menu:"))
+async def cb_rar_menu(callback: CallbackQuery):
+  _, target_uid_str = callback.data.split(":")
+  target_uid = int(target_uid_str)
+  if callback.from_user.id != target_uid:
+    return await callback.answer("Это ангар другого игрока!", show_alert=True)
+
+  text, kb = build_rarity_menu(target_uid)
+  if callback.message.photo:
+    await callback.message.delete()
+    await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+  else:
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+  await callback.answer()
+
+@dp.callback_query(F.data.startswith("rar_list:"))
+async def cb_rar_list(callback: CallbackQuery):
+  _, target_uid_str, r_code, page_str = callback.data.split(":")
+  target_uid = int(target_uid_str)
+  if callback.from_user.id != target_uid:
+    return await callback.answer("Это ангар другого игрока!", show_alert=True)
+
+  page = int(page_str)
+  text, kb = build_rarity_list_page(target_uid, r_code, page)
+  if callback.message.photo:
+    await callback.message.delete()
+    await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+  else:
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+  await callback.answer()
+
+@dp.callback_query(F.data.startswith("view_card:"))
+async def cb_view_card(callback: CallbackQuery):
+  _, target_uid_str, r_code, page_str, cid_str = callback.data.split(":")
+  target_uid = int(target_uid_str)
+  if callback.from_user.id != target_uid:
+    return await callback.answer("Это ангар другого игрока!", show_alert=True)
+
+  cid = int(cid_str)
+  cur.execute("""
+      SELECT c.name, c.nation, c.rarity, c.points, c.file_id, COUNT(i.card_id)
+      FROM inventory i JOIN cards c ON i.card_id = c.id
+      WHERE i.user_id = ? AND c.id = ? GROUP BY c.id
+  """, (target_uid, cid))
+  row = cur.fetchone()
+  if not row:
+    return await callback.answer("Карточка не найдена!", show_alert=True)
+
+  name, nation, rarity, pts, file_id, cnt = row
+  caption = (
+      f"🚜 **Техника:** {name}\n"
+      f"🌍 **Нация:** {nation}\n"
+      f"✨ **Редкость:** {rarity}\n"
+      f"🏆 **Очки за карту:** +{pts}\n"
+      f"📦 **В ангаре:** {cnt} шт."
+  )
+  kb = InlineKeyboardMarkup(inline_keyboard=[
+      [InlineKeyboardButton(text="🔙 Назад к списку", callback_data=f"rar_list:{target_uid}:{r_code}:{page_str}")]
+  ])
+
+  await callback.message.delete()
+  await callback.message.answer_photo(photo=file_id, caption=caption, reply_markup=kb, parse_mode="Markdown")
+  await callback.answer()
+
+@dp.callback_query(F.data.startswith("hangar_back:"))
+async def cb_hangar_back(callback: CallbackQuery):
+  _, target_uid_str = callback.data.split(":")
+  target_uid = int(target_uid_str)
+  if callback.from_user.id != target_uid:
+    return await callback.answer("Это ангар другого игрока!", show_alert=True)
+
+  text, kb = build_hangar_page(target_uid, callback.from_user.first_name, 0)
+  if callback.message.photo:
+    await callback.message.delete()
+    await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+  else:
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
   await callback.answer()
 
 # Топ игроков
