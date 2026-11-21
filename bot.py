@@ -10,7 +10,9 @@ from aiogram.types import Message
 TOKEN = "9201193460:AAH_ip4vvxrotIRNKNxjQF6His3TeLu-X4I"
 ADMIN_ID = 1563482370  # СЮДА ВСТАВЬТЕ ВАШ ID (БЕЗ КАВЫЧЕК!)
 DEFAULT_COOLDOWN = 30 # Перезарядка по умолчанию (в минутах)
-# --------------------------------
+BP_STEP = 20000    # Сколько очков нужно на каждый уровень БП (20000, 40000, 60000...)
+BP_MAX_LEVEL = 30  # Максимальный уровень боевого пропуска
+#--------------------------------
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -49,6 +51,17 @@ def get_cooldown_seconds() -> int:
     cur.execute("SELECT value FROM settings WHERE key = 'cooldown_mins'")
     mins, = cur.fetchone()
     return mins * 60
+
+def get_bp_info(points: int):
+    level = min(points // BP_STEP, BP_MAX_LEVEL)
+    if level >= BP_MAX_LEVEL:
+        return BP_MAX_LEVEL, BP_MAX_LEVEL * BP_STEP, "🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩 (МАКС.)"
+    
+    next_lvl_pts = (level + 1) * BP_STEP
+    current_in_lvl = points - (level * BP_STEP)
+    filled = int((current_in_lvl / BP_STEP) * 10)
+    bar = "🟩" * filled + "⬜️" * (10 - filled)
+    return level, next_lvl_pts, bar
 
 def register_user(user_id: int, username: str):
     cur.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username or "Танкист"))
@@ -233,16 +246,28 @@ async def spin_tank(message: Message):
     chosen_list = random.choices(all_cards, weights=weights_list, k=1)
     card_id, name, nation, rarity, pts, file_id, _ = chosen_list.pop()
 
-    cur.execute("UPDATE users SET last_spin = ?, points = points + ? WHERE user_id = ?", (now, pts, uid))
-    cur.execute("INSERT INTO inventory (user_id, card_id) VALUES (?, ?)", (uid, card_id))
-    conn.commit()
+cur.execute("SELECT points FROM users WHERE user_id = ?", (uid,))
+old_pts, = cur.fetchone()
+old_lvl, _, _ = get_bp_info(old_pts)
+
+new_pts = old_pts + pts
+new_lvl, _, _ = get_bp_info(new_pts)
+
+cur.execute("UPDATE users SET last_spin = ?, points = ? WHERE user_id = ?", (now, new_pts, uid))
+cur.execute("INSERT INTO inventory (user_id, card_id) VALUES (?, ?)", (uid, card_id))
+conn.commit()
+
+lvl_up_text = ""
+if new_lvl > old_lvl:
+    lvl_up_text = f"\n\n🎉 **НОВЫЙ УРОВЕНЬ БОЕВОГО ПРОПУСКА: {new_lvl} ур.!**"
 
     caption = (
         f"🎖 **Новая боевая машина!**\n\n"
         f"🚜 **Техника:** {name}\n"
         f"🌍 **Нация:** {nation}\n"
         f"✨ **Редкость:** {rarity}\n"
-        f"🏆 **Очки:** +{pts}"
+        f"🏆 **Очки:** +{pts}{lvl_up_text}"
+
     )
     await message.reply_photo(photo=file_id, caption=caption, parse_mode="Markdown")
 
@@ -265,7 +290,15 @@ async def my_hangar(message: Message):
     inv_lines = [f"• **{name}** [{nation}] ({rarity}) — {cnt} шт." for name, nation, rarity, cnt in rows]
     inv_text = "\n".join(inv_lines) or "Пока пусто. Напишите «танк»!"
 
-    text = f"👤 **Танкист:** {message.from_user.first_name}\n🏆 **Очки:** {points}\n\n🚜 **Ваш ангар:**\n{inv_text}"
+        bp_lvl, next_pts, bp_bar = get_bp_info(points)
+    text = (
+        f"👤 **Танкист:** {message.from_user.first_name}\n"
+        f"🏆 **Очки:** {points}\n"
+        f"🎖 **Боевой пропуск:** {bp_lvl}/{BP_MAX_LEVEL} ур. ({points}/{next_pts})\n"
+        f"{bp_bar}\n\n"
+        f"🚜 **Ваш ангар:**\n{inv_text}"
+    )
+
     await message.reply(text, parse_mode="Markdown")
 
 # Топ игроков
@@ -277,6 +310,33 @@ async def top_players(message: Message):
     top_lines = [f"{i+1}. **{uname}** — {pts} очк." for i, (uname, pts) in enumerate(rows)]
     top_text = "\n".join(top_lines) or "Рейтинг пуст."
     await message.reply(f"🏆 **Топ-10 танкистов:**\n\n{top_text}", parse_mode="Markdown")
+
+# Боевой пропуск
+@dp.message(Command("bp"))
+@dp.message(F.text.lower().in_({"бп", "пропуск", "боевой пропуск"}))
+async def battle_pass(message: Message):
+    uid = message.from_user.id
+    register_user(uid, message.from_user.first_name)
+
+    cur.execute("SELECT points FROM users WHERE user_id = ?", (uid,))
+    points, = cur.fetchone()
+    bp_lvl, next_pts, bp_bar = get_bp_info(points)
+
+    if bp_lvl >= BP_MAX_LEVEL:
+        status_text = "🏆 Вы достигли максимального 30 уровня Боевого пропуска!"
+    else:
+        need = next_pts - points
+        status_text = f"До **{bp_lvl + 1} уровня** осталось: **{need} очк.**"
+
+    text = (
+        f"🎖 **БОЕВОЙ ПРОПУСК (Сезон 1)**\n\n"
+        f"📊 **Ваш уровень:** {bp_lvl} из {BP_MAX_LEVEL}\n"
+        f"💰 **Всего очков:** {points} / {next_pts}\n"
+        f"{bp_bar}\n\n"
+        f"{status_text}"
+    )
+    await message.reply(text, parse_mode="Markdown")
+
 
 async def main():
     print("Бот успешно запущен!")
