@@ -214,62 +214,62 @@ async def delete_card(message: Message):
     await message.reply(f"🗑 Карточка #{card_id} удалена!")
 
 # Выбивание танка (крутка)
+# Выбивание танка (крутка)
 @dp.message(Command("tank"))
 @dp.message(F.text.lower().in_({"танк", "крутить", "карточка"}))
 async def spin_tank(message: Message):
-    uid = message.from_user.id
-    register_user(uid, message.from_user.first_name)
+  uid = message.from_user.id
+  register_user(uid, message.from_user.first_name)
 
-    cur.execute("SELECT id, name, nation, rarity, points, file_id, weight FROM cards")
-    all_cards = cur.fetchall()
-    if not all_cards:
-        return await message.reply("⚙️ В базе пока нет танков. Админ скоро добавит карточки!")
+  cur.execute("SELECT id, name, nation, rarity, points, file_id, weight FROM cards")
+  all_cards = cur.fetchall()
+  if not all_cards:
+    return await message.reply("⚙️ В базе пока нет танков. Админ скоро добавит карточки!")
 
-    cur.execute("SELECT last_spin FROM users WHERE user_id = ?", (uid,))
-    last_spin, = cur.fetchone()
-    now = int(time.time())
-    cooldown_sec = get_cooldown_seconds()
+  cur.execute("SELECT last_spin FROM users WHERE user_id = ?", (uid,))
+  last_spin, = cur.fetchone()
+  now = int(time.time())
+  cooldown_sec = get_cooldown_seconds()
 
-    if now - last_spin < cooldown_sec:
-        rem = cooldown_sec - (now - last_spin)
-        hours, mins = rem // 3600, (rem % 3600) // 60
-        secs = rem % 60
-        if hours > 0:
-            time_str = f"{hours} ч. {mins} мин."
-        elif mins > 0:
-            time_str = f"{mins} мин. {secs} сек."
-        else:
-            time_str = f"{secs} сек."
-        return await message.reply(f"⏳ Перезарядка! Следующий танк через **{time_str}**", parse_mode="Markdown")
+  if now - last_spin < cooldown_sec:
+    rem = cooldown_sec - (now - last_spin)
+    hours, mins = rem // 3600, (rem % 3600) // 60
+    secs = rem % 60
+    if hours > 0:
+      time_str = f"{hours} ч. {mins} мин."
+    elif mins > 0:
+      time_str = f"{mins} мин. {secs} сек."
+    else:
+      time_str = f"{secs} сек."
+    return await message.reply(f"⏳ Перезарядка! Следующий танк через **{time_str}**", parse_mode="Markdown")
 
-    weights_list = [w for _, _, _, _, _, _, w in all_cards]
-    chosen_list = random.choices(all_cards, weights=weights_list, k=1)
-    card_id, name, nation, rarity, pts, file_id, _ = chosen_list.pop()
+  weights_list = [w for _, _, _, _, _, _, w in all_cards]
+  chosen_list = random.choices(all_cards, weights=weights_list, k=1)
+  card_id, name, nation, rarity, pts, file_id, _ = chosen_list.pop()
 
-cur.execute("SELECT points FROM users WHERE user_id = ?", (uid,))
-old_pts, = cur.fetchone()
-old_lvl, _, _ = get_bp_info(old_pts)
+  cur.execute("SELECT points FROM users WHERE user_id = ?", (uid,))
+  old_pts, = cur.fetchone()
+  old_lvl, _, _ = get_bp_info(old_pts)
 
-new_pts = old_pts + pts
-new_lvl, _, _ = get_bp_info(new_pts)
+  new_pts = old_pts + pts
+  new_lvl, _, _ = get_bp_info(new_pts)
 
-cur.execute("UPDATE users SET last_spin = ?, points = ? WHERE user_id = ?", (now, new_pts, uid))
-cur.execute("INSERT INTO inventory (user_id, card_id) VALUES (?, ?)", (uid, card_id))
-conn.commit()
+  cur.execute("UPDATE users SET last_spin = ?, points = ? WHERE user_id = ?", (now, new_pts, uid))
+  cur.execute("INSERT INTO inventory (user_id, card_id) VALUES (?, ?)", (uid, card_id))
+  conn.commit()
 
-lvl_up_text = ""
-if new_lvl > old_lvl:
+  lvl_up_text = ""
+  if new_lvl > old_lvl:
     lvl_up_text = f"\n\n🎉 **НОВЫЙ УРОВЕНЬ БОЕВОГО ПРОПУСКА: {new_lvl} ур.!**"
 
-    caption = (
-        f"🎖 **Новая боевая машина!**\n\n"
-        f"🚜 **Техника:** {name}\n"
-        f"🌍 **Нация:** {nation}\n"
-        f"✨ **Редкость:** {rarity}\n"
-        f"🏆 **Очки:** +{pts}{lvl_up_text}"
-
-    )
-    await message.reply_photo(photo=file_id, caption=caption, parse_mode="Markdown")
+  caption = (
+      f"🎖 **Новая боевая машина!**\n\n"
+      f"🚜 **Техника:** {name}\n"
+      f"🌍 **Нация:** {nation}\n"
+      f"✨ **Редкость:** {rarity}\n"
+      f"🏆 **Очки:** +{pts}{lvl_up_text}"
+  )
+  await message.reply_photo(photo=file_id, caption=caption, parse_mode="Markdown")
 
 # Профиль и ангар
 @dp.message(Command("profile"))
