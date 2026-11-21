@@ -4,7 +4,8 @@ import sqlite3
 import time
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+
 
 # --- ВСТАВЬТЕ ВАШИ ДАННЫЕ НИЖЕ ---
 TOKEN = "9201193460:AAH_ip4vvxrotIRNKNxjQF6His3TeLu-X4I"
@@ -236,18 +237,50 @@ async def edit_card(message: Message):
         )
 
 # Просмотр списка всех карточек с ID (ТОЛЬКО ДЛЯ АДМИНА)
+def build_list_page(page: int = 0):
+  cur.execute("SELECT id, name, nation, rarity, points, weight FROM cards")
+  rows = cur.fetchall()
+  if not rows:
+    return "База карточек пуста.", None
+
+  per_page = 20
+  total_pages = (len(rows) - 1) // per_page + 1
+  page = max(0, min(page, total_pages - 1))
+
+  start = page * per_page
+  chunk = rows[start:start + per_page]
+
+  lines = [
+      f"🆔 {cid} — {name} [{nation}] ({rarity}) | +{pts} очк. | шанс: {weight}"
+      for cid, name, nation, rarity, pts, weight in chunk
+  ]
+  text = f"📋 Список карточек (Стр. {page + 1}/{total_pages}, всего: {len(rows)}):\n\n" + "\n".join(lines)
+
+  buttons = []
+  if page > 0:
+    buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"list_page:{page - 1}"))
+  if page < total_pages - 1:
+    buttons.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"list_page:{page + 1}"))
+
+  kb = InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
+  return text, kb
+
+# Просмотр списка всех карточек со страницами (ТОЛЬКО ДЛЯ АДМИНА)
 @dp.message(Command("list"))
 async def list_cards(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    cur.execute("SELECT id, name, nation, rarity, points, weight FROM cards")
-    rows = cur.fetchall()
-    if not rows:
-        return await message.reply("База карточек пуста.")
-    lines = []
-    for cid, name, nation, rarity, pts, weight in rows:
-        lines.append(f"🆔 {cid} — {name} [{nation}] ({rarity}) | +{pts} очк. | шанс: {weight}")
-    await message.reply("📋 Список карточек:\n\n" + "\n".join(lines))
+  if message.from_user.id != ADMIN_ID:
+    return
+  text, kb = build_list_page(0)
+  await message.reply(text, reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("list_page:"))
+async def cb_list_page(callback: CallbackQuery):
+  if callback.from_user.id != ADMIN_ID:
+    return await callback.answer("Недоступно", show_alert=True)
+  page = int(callback.data.split(":")[1])
+  text, kb = build_list_page(page)
+  await callback.message.edit_text(text, reply_markup=kb)
+  await callback.answer()
 
 # Удаление карточки по ID (ТОЛЬКО ДЛЯ АДМИНА)
 @dp.message(Command("del"))
@@ -325,35 +358,69 @@ async def spin_tank(message: Message):
   )
   await message.reply_photo(photo=file_id, caption=caption, parse_mode="Markdown")
 
-# Профиль и ангар
+def build_hangar_page(uid: int, first_name: str, page: int = 0):
+  cur.execute("SELECT points FROM users WHERE user_id = ?", (uid,))
+  points, = cur.fetchone()
+  bp_lvl, next_pts, bp_bar = get_bp_info(points)
+
+  cur.execute("""
+      SELECT c.name, c.nation, c.rarity, COUNT(i.card_id)
+      FROM inventory i JOIN cards c ON i.card_id = c.id
+      WHERE i.user_id = ? GROUP BY c.id
+  """, (uid,))
+  rows = cur.fetchall()
+
+  per_page = 20
+  if not rows:
+    inv_text = "Пока пусто. Напишите «танк»!"
+    kb = None
+    page_header = ""
+  else:
+    total_pages = (len(rows) - 1) // per_page + 1
+    page = max(0, min(page, total_pages - 1))
+    start = page * per_page
+    chunk = rows[start:start + per_page]
+
+    inv_lines = [f"• **{name}** [{nation}] ({rarity}) — {cnt} шт." for name, nation, rarity, cnt in chunk]
+    inv_text = "\n".join(inv_lines)
+    page_header = f" (Стр. {page + 1}/{total_pages})"
+
+    buttons = []
+    if page > 0:
+      buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"hangar_page:{uid}:{page - 1}"))
+    if page < total_pages - 1:
+      buttons.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"hangar_page:{uid}:{page + 1}"))
+    kb = InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
+
+  text = (
+      f"👤 **Танкист:** {first_name}\n"
+      f"🏆 **Очки:** {points}\n"
+      f"🎖 **Боевой пропуск:** {bp_lvl}/{BP_MAX_LEVEL} ур. ({points}/{next_pts})\n"
+      f"{bp_bar}\n\n"
+      f"🚜 **Ваш ангар{page_header}:**\n{inv_text}"
+  )
+  return text, kb
+
+# Профиль и ангар со страницами
 @dp.message(Command("profile"))
 @dp.message(F.text.lower().in_({"ангар", "профиль"}))
 async def my_hangar(message: Message):
-    uid = message.from_user.id
-    register_user(uid, message.from_user.first_name)
+  uid = message.from_user.id
+  register_user(uid, message.from_user.first_name)
+  text, kb = build_hangar_page(uid, message.from_user.first_name, 0)
+  await message.reply(text, reply_markup=kb, parse_mode="Markdown")
 
-    cur.execute("SELECT points FROM users WHERE user_id = ?", (uid,))
-    points, = cur.fetchone()
+@dp.callback_query(F.data.startswith("hangar_page:"))
+async def cb_hangar_page(callback: CallbackQuery):
+  _, target_uid_str, page_str = callback.data.split(":")
+  target_uid = int(target_uid_str)
+  if callback.from_user.id != target_uid:
+    return await callback.answer("Это ангар другого игрока!", show_alert=True)
 
-    cur.execute("""
-        SELECT c.name, c.nation, c.rarity, COUNT(i.card_id)
-        FROM inventory i JOIN cards c ON i.card_id = c.id
-        WHERE i.user_id = ? GROUP BY c.id
-    """, (uid,))
-    rows = cur.fetchall() 
-    inv_lines = [f"• **{name}** [{nation}] ({rarity}) — {cnt} шт." for name, nation, rarity, cnt in rows]
-    inv_text = "\n".join(inv_lines) or "Пока пусто. Напишите «танк»!"
-
-    bp_lvl, next_pts, bp_bar = get_bp_info(points)
-    text = (
-        f"👤 **Танкист:** {message.from_user.first_name}\n"
-        f"🏆 **Очки:** {points}\n"
-        f"🎖 **Боевой пропуск:** {bp_lvl}/{BP_MAX_LEVEL} ур. ({points}/{next_pts})\n"
-        f"{bp_bar}\n\n"
-        f"🚜 **Ваш ангар:**\n{inv_text}"
-    )
-
-    await message.reply(text, parse_mode="Markdown")
+  page = int(page_str)
+  text, kb = build_hangar_page(target_uid, callback.from_user.first_name, page)
+  await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+  await callback.answer()
 
 # Топ игроков
 @dp.message(Command("top"))
