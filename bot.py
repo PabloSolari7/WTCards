@@ -307,9 +307,9 @@ async def my_hangar(message: Message):
 async def top_players(message: Message):
     cur.execute("SELECT username, points FROM users ORDER BY points DESC LIMIT 10")
     rows = cur.fetchall()
-    top_lines = [f"{i+1}. **{uname}** — {pts} очк." for i, (uname, pts) in enumerate(rows)]
+    top_lines = [f"{i+1}. {uname} — {pts} очк." for i, (uname, pts) in enumerate(rows)]
     top_text = "\n".join(top_lines) or "Рейтинг пуст."
-    await message.reply(f"🏆 **Топ-10 танкистов:**\n\n{top_text}", parse_mode="Markdown")
+    await message.reply(f"🏆 **Топ-10 танкистов:**\n\n{top_text}")
 
 # Боевой пропуск
 @dp.message(Command("bp"))
