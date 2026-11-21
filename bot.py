@@ -359,17 +359,17 @@ async def spin_tank(message: Message):
   await message.reply_photo(photo=file_id, caption=caption, parse_mode="Markdown")
 
 RARITY_CONFIG = [
-    ("common", "⚪️ Обычные", "%обыч%"),
-    ("rare", "🔵 Редкие", "%редк%"),
-    ("epic", "🟣 Эпические", "%эпич%"),
-    ("legend", "🟡 Легендарные", "%легенд%")
+    ("common", "⚪️ Обычные", "%Обыч%", "%обыч%"),
+    ("rare", "🔵 Редкие", "%Редк%", "%редк%"),
+    ("epic", "🟣 Эпические", "%Эпич%", "%эпич%"),
+    ("legend", "🟡 Легендарные", "%Легенд%", "%легенд%")
 ]
 
 def get_rarity_info(r_code: str):
-  for code, label, pattern in RARITY_CONFIG:
+  for code, label, pat1, pat2 in RARITY_CONFIG:
     if code == r_code:
-      return label, pattern
-  return "⚪️ Обычные", "%обыч%"
+      return label, pat1, pat2
+  return "⚪️ Обычные", "%Обыч%", "%обыч%"
 
 def build_hangar_page(uid: int, first_name: str, page: int = 0):
   cur.execute("SELECT points FROM users WHERE user_id = ?", (uid,))
@@ -382,6 +382,69 @@ def build_hangar_page(uid: int, first_name: str, page: int = 0):
       WHERE i.user_id = ? GROUP BY c.id
   """, (uid,))
   rows = cur.fetchall()
+
+  per_page = 10
+  if not rows:
+    inv_text = "Пока пусто. Напишите «танк»!"
+    kb = None
+    page_header = ""
+  else:
+    total_pages = (len(rows) - 1) // per_page + 1
+    page = max(0, min(page, total_pages - 1))
+    start = page * per_page
+    chunk = rows[start:start + per_page]
+
+    inv_lines = [f"• **{name}** [{nation}] ({rarity}) — {cnt} шт." for name, nation, rarity, cnt in chunk]
+    inv_text = "\n".join(inv_lines)
+    page_header = f" (Стр. {page + 1}/{total_pages})"
+
+    nav_buttons = []
+    if page > 0:
+      nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"hangar_page:{uid}:{page - 1}"))
+    if page < total_pages - 1:
+      nav_buttons.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"hangar_page:{uid}:{page + 1}"))
+
+    kb_rows = []
+    if nav_buttons:
+      kb_rows.append(nav_buttons)
+    kb_rows.append([InlineKeyboardButton(text="🖼 Посмотреть карточки", callback_data=f"rar_menu:{uid}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+  text = (
+      f"👤 **Танкист:** {first_name}\n"
+      f"🏆 **Очки:** {points}\n"
+      f"🎖 **Боевой пропуск:** {bp_lvl}/{BP_MAX_LEVEL} ур. ({points}/{next_pts})\n"
+      f"{bp_bar}\n\n"
+      f"🚜 **Ваш ангар{page_header}:**\n{inv_text}"
+  )
+  return text, kb
+
+def build_rarity_menu(uid: int):
+  kb_rows = []
+  for code, label, pat1, pat2 in RARITY_CONFIG:
+    cur.execute("""
+        SELECT COUNT(DISTINCT c.id)
+        FROM inventory i JOIN cards c ON i.card_id = c.id
+        WHERE i.user_id = ? AND (c.rarity LIKE ? OR c.rarity LIKE ?)
+    """, (uid, pat1, pat2))
+    cnt, = cur.fetchone()
+    kb_rows.append([InlineKeyboardButton(text=f"{label} ({cnt} шт.)", callback_data=f"rar_list:{uid}:{code}:0")])
+
+  kb_rows.append([InlineKeyboardButton(text="🔙 Вернуться в профиль", callback_data=f"hangar_back:{uid}")])
+  kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+  text = "🗂 **Каталог вашей техники**\n\nВыберите редкость, чтобы открыть список машин:"
+  return text, kb
+
+def build_rarity_list_page(uid: int, r_code: str, page: int = 0):
+  label, pat1, pat2 = get_rarity_info(r_code)
+  cur.execute("""
+      SELECT c.id, c.name, c.nation, COUNT(i.card_id)
+      FROM inventory i JOIN cards c ON i.card_id = c.id
+      WHERE i.user_id = ? AND (c.rarity LIKE ? OR c.rarity LIKE ?)
+      GROUP BY c.id ORDER BY c.id ASC
+  """, (uid, pat1, pat2))
+  rows = cur.fetchall()
+
 
   per_page = 10
   if not rows:
