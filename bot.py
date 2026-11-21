@@ -290,7 +290,7 @@ async def my_hangar(message: Message):
     inv_lines = [f"• **{name}** [{nation}] ({rarity}) — {cnt} шт." for name, nation, rarity, cnt in rows]
     inv_text = "\n".join(inv_lines) or "Пока пусто. Напишите «танк»!"
 
-        bp_lvl, next_pts, bp_bar = get_bp_info(points)
+    bp_lvl, next_pts, bp_bar = get_bp_info(points)
     text = (
         f"👤 **Танкист:** {message.from_user.first_name}\n"
         f"🏆 **Очки:** {points}\n"
