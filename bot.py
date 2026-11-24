@@ -130,7 +130,11 @@ def register_user(user_id: int, username: str):
 def get_user_name(user_id: int, fallback: str) -> str:
   cur.execute("SELECT username FROM users WHERE user_id = ?", (user_id,))
   row = cur.fetchone()
-  return row if row and row else (fallback or "Танкист")
+  if row:
+    uname, = row
+    if uname:
+      return uname
+  return fallback or "Танкист"
 
 # Смена игрового ника внутри бота
 @dp.message(Command("nick"))
@@ -139,10 +143,10 @@ async def change_nick(message: Message):
   register_user(uid, message.from_user.first_name)
 
   parts = message.text.split(maxsplit=1)
-  if len(parts) < 2 or not parts.strip():
+  if len(parts) < 2:
     return await message.reply("Укажите новый ник после команды, например:\n`/nick ТанковыйАс`", parse_mode="Markdown")
 
-  new_nick = parts.strip()
+  new_nick = parts.pop(1).strip()
   if len(new_nick) < 2 or len(new_nick) > 20:
     return await message.reply("❌ Длина ника должна быть от 2 до 20 символов.")
 
