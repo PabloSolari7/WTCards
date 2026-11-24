@@ -44,6 +44,11 @@ try:
 except sqlite3.OperationalError:
   pass
 
+try:
+  cur.execute("ALTER TABLE users ADD COLUMN snowflakes INTEGER DEFAULT 0")
+except sqlite3.OperationalError:
+  pass
+
 cur.execute("""CREATE TABLE IF NOT EXISTS inventory (
     user_id INTEGER, card_id INTEGER
 )""")
@@ -119,8 +124,33 @@ def claim_bp_rewards(uid: int, current_lvl: int):
   return rewards_given
 
 def register_user(user_id: int, username: str):
-    cur.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username or "Танкист"))
-    conn.commit()
+  cur.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username or "Танкист"))
+  conn.commit()
+
+def get_user_name(user_id: int, fallback: str) -> str:
+  cur.execute("SELECT username FROM users WHERE user_id = ?", (user_id,))
+  row = cur.fetchone()
+  return row if row and row else (fallback or "Танкист")
+
+# Смена игрового ника внутри бота
+@dp.message(Command("nick"))
+async def change_nick(message: Message):
+  uid = message.from_user.id
+  register_user(uid, message.from_user.first_name)
+
+  parts = message.text.split(maxsplit=1)
+  if len(parts) < 2 or not parts.strip():
+    return await message.reply("Укажите новый ник после команды, например:\n`/nick ТанковыйАс`", parse_mode="Markdown")
+
+  new_nick = parts.strip()
+  if len(new_nick) < 2 or len(new_nick) > 20:
+    return await message.reply("❌ Длина ника должна быть от 2 до 20 символов.")
+
+  clean_nick = new_nick.replace("*", "").replace("_", "").replace("`", "")
+  cur.execute("UPDATE users SET username = ? WHERE user_id = ?", (clean_nick, uid))
+  conn.commit()
+  await message.reply(f"✅ Ваш игровой ник изменён на: **{clean_nick}**", parse_mode="Markdown")
+
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -341,7 +371,7 @@ async def spin_tank(message: Message):
   new_pts = old_pts + pts
   new_lvl, _, _ = get_bp_info(new_pts)
 
-  cur.execute("UPDATE users SET last_spin = ?, points = ? WHERE user_id = ?", (now, new_pts, uid))
+  cur.execute("UPDATE users SET last_spin = ?, points = ?, snowflakes = COALESCE(snowflakes, 0) + ? WHERE user_id = ?", (now, new_pts, pts, uid))
   cur.execute("INSERT INTO inventory (user_id, card_id) VALUES (?, ?)", (uid, card_id))
   conn.commit()
 
@@ -354,7 +384,9 @@ async def spin_tank(message: Message):
       f"🚜 **Техника:** {name}\n"
       f"🌍 **Нация:** {nation}\n"
       f"✨ **Редкость:** {rarity}\n"
-      f"🏆 **Очки:** +{pts}{lvl_up_text}"
+      f"🏆 **Очки:** +{pts}\n"
+      f"❄️ **Снежинки:** +{pts}{lvl_up_text}"
+
   )
   await message.reply_photo(photo=file_id, caption=caption, parse_mode="Markdown")
 
@@ -372,8 +404,9 @@ def get_rarity_info(r_code: str):
   return "⚪️ Обычные", "%Обыч%", "%обыч%"
 
 def build_hangar_page(uid: int, first_name: str, page: int = 0):
-  cur.execute("SELECT points FROM users WHERE user_id = ?", (uid,))
-  points, = cur.fetchone()
+  cur.execute("SELECT points, COALESCE(snowflakes, 0) FROM users WHERE user_id = ?", (uid,))
+  points, snowflakes = cur.fetchone()
+
   bp_lvl, next_pts, bp_bar = get_bp_info(points)
 
   cur.execute("""
@@ -411,8 +444,9 @@ def build_hangar_page(uid: int, first_name: str, page: int = 0):
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
   text = (
-      f"👤 **Танкист:** {first_name}\n"
+      f"👤 **Танкист:** {get_user_name(uid, first_name)}\n"
       f"🏆 **Очки:** {points}\n"
+      f"❄️ **Снежинки:** {snowflakes}\n"
       f"🎖 **Боевой пропуск:** {bp_lvl}/{BP_MAX_LEVEL} ур. ({points}/{next_pts})\n"
       f"{bp_bar}\n\n"
       f"🚜 **Ваш ангар{page_header}:**\n{inv_text}"
