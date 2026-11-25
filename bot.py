@@ -13,6 +13,9 @@ ADMIN_ID = 1563482370  # СЮДА ВСТАВЬТЕ ВАШ ID (БЕЗ КАВЫЧ�
 DEFAULT_COOLDOWN = 30 # Перезарядка по умолчанию (в минутах)
 BP_STEP = 20000    # Сколько очков нужно на каждый уровень БП (20000, 40000, 60000...)
 BP_MAX_LEVEL = 30  # Максимальный уровень боевого пропуска
+SNOWFLAKE_MULT = 5        # Множитель снежинок с крутки (очки * 5)
+EVENT_EXCL_PRICE = 500000 # Цена 1 эксклюзивного танка
+EVENT_LEG_PRICE = 400000  # Цена недостающего легендарного танка
 #--------------------------------
 
 bot = Bot(token=TOKEN)
@@ -375,7 +378,8 @@ async def spin_tank(message: Message):
   new_pts = old_pts + pts
   new_lvl, _, _ = get_bp_info(new_pts)
 
-  cur.execute("UPDATE users SET last_spin = ?, points = ?, snowflakes = COALESCE(snowflakes, 0) + ? WHERE user_id = ?", (now, new_pts, pts, uid))
+  snow_gain = pts * SNOWFLAKE_MULT
+  cur.execute("UPDATE users SET last_spin = ?, points = ?, snowflakes = COALESCE(snowflakes, 0) + ? WHERE user_id = ?", (now, new_pts, snow_gain, uid))
   cur.execute("INSERT INTO inventory (user_id, card_id) VALUES (?, ?)", (uid, card_id))
   conn.commit()
 
@@ -389,7 +393,7 @@ async def spin_tank(message: Message):
       f"🌍 **Нация:** {nation}\n"
       f"✨ **Редкость:** {rarity}\n"
       f"🏆 **Очки:** +{pts}\n"
-      f"❄️ **Снежинки:** +{pts}{lvl_up_text}"
+      f"❄️ **Снежинки:** +{snow_gain}{lvl_up_text}"
 
   )
   await message.reply_photo(photo=file_id, caption=caption, parse_mode="Markdown")
@@ -398,7 +402,8 @@ RARITY_CONFIG = [
     ("common", "⚪️ Обычные", "%Обыч%", "%обыч%"),
     ("rare", "🔵 Редкие", "%Редк%", "%редк%"),
     ("epic", "🟣 Эпические", "%Эпич%", "%эпич%"),
-    ("legend", "🟡 Легендарные", "%Легенд%", "%легенд%")
+    ("legend", "🟡 Легендарные", "%Легенд%", "%легенд%"),
+    ("exclusive", "❄️ Эксклюзивные", "%Эксклюз%", "%эксклюз%")
 ]
 
 def get_rarity_info(r_code: str):
@@ -445,6 +450,7 @@ def build_hangar_page(uid: int, first_name: str, page: int = 0):
     if nav_buttons:
       kb_rows.append(nav_buttons)
     kb_rows.append([InlineKeyboardButton(text="🖼 Посмотреть карточки", callback_data=f"rar_menu:{uid}")])
+    kb_rows.append([InlineKeyboardButton(text="♻️ Обменять повторки", callback_data=f"melt_list:{uid}:0")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
   text = (
@@ -754,6 +760,270 @@ async def claim_bp(message: Message):
       f"🚜 Все машины уже отправлены в ваш ангар!",
       parse_mode="Markdown"
   )
+
+def build_event_menu(uid: int):
+  cur.execute("SELECT COALESCE(snowflakes, 0) FROM users WHERE user_id = ?", (uid,))
+  row = cur.fetchone()
+  snowflakes, = row if row else (0,)
+
+  cur.execute("SELECT COUNT(*) FROM cards WHERE rarity LIKE '%Эксклюз%' OR rarity LIKE '%эксклюз%'")
+  total_excl, = cur.fetchone()
+
+  cur.execute("""
+      SELECT COUNT(DISTINCT c.id)
+      FROM inventory i JOIN cards c ON i.card_id = c.id
+      WHERE i.user_id = ? AND (c.rarity LIKE '%Эксклюз%' OR c.rarity LIKE '%эксклюз%')
+  """, (uid,))
+  owned_excl, = cur.fetchone()
+
+  text = (
+      f"🎄 **ИВЕНТ: ПРАЗДНИК К НАМ ПРИХОДИТ** 🎄\n\n"
+      f"❄️ **Ваши снежинки:** {snowflakes:,}\n"
+      f"🎁 **Собрано эксклюзивов:** {owned_excl} из {total_excl}\n\n"
+      f"🛒 **Новогодний магазин:**\n"
+      f"1️⃣ **Эксклюзивный танк** (без повторок) — **{EVENT_EXCL_PRICE:,} ❄️**\n"
+      f"2️⃣ **Недостающий Легендарный танк** — **{EVENT_LEG_PRICE:,} ❄️**\n\n"
+      f"✨ *Снежинки выпадают с каждой крутки (×{SNOWFLAKE_MULT} от очков карточки)!*"
+  ).replace(",", " ")
+
+  kb = InlineKeyboardMarkup(inline_keyboard=[
+      [InlineKeyboardButton(text=f"❄️ Купить Эксклюзив ({EVENT_EXCL_PRICE // 1000}к ❄️)", callback_data=f"buy_event:excl:{uid}")],
+      [InlineKeyboardButton(text=f"🟡 Купить Легендарку ({EVENT_LEG_PRICE // 1000}к ❄️)", callback_data=f"buy_event:leg:{uid}")]
+  ])
+  return text, kb
+
+# Открытие меню ивента
+@dp.message(Command("event"))
+@dp.message(F.text.lower().in_({"ивент", "магазин", "праздник", "новый год"}))
+async def event_shop(message: Message):
+  uid = message.from_user.id
+  register_user(uid, message.from_user.first_name)
+  text, kb = build_event_menu(uid)
+  await message.reply(text, reply_markup=kb, parse_mode="Markdown")
+
+# Обработка покупок в ивентовом магазине
+@dp.callback_query(F.data.startswith("buy_event:"))
+async def cb_buy_event(callback: CallbackQuery):
+  _, item_type, target_uid_str = callback.data.split(":")
+  target_uid = int(target_uid_str)
+  if callback.from_user.id != target_uid:
+    return await callback.answer("Откройте свой магазин командой «ивент»!", show_alert=True)
+
+  cur.execute("SELECT COALESCE(snowflakes, 0) FROM users WHERE user_id = ?", (target_uid,))
+  snowflakes, = cur.fetchone()
+
+  if item_type == "excl":
+    price = EVENT_EXCL_PRICE
+    pat1, pat2 = "%Эксклюз%", "%эксклюз%"
+    title = "🎄 **ЭКСКЛЮЗИВНАЯ БОЕВАЯ МАШИНА!** 🎄"
+  else:
+    price = EVENT_LEG_PRICE
+    pat1, pat2 = "%Легенд%", "%легенд%"
+    title = "🟡 **ЛЕГЕНДАРНАЯ БОЕВАЯ МАШИНА!** 🟡"
+
+  cur.execute("""
+      SELECT id, name, nation, rarity, points, file_id
+      FROM cards
+      WHERE (rarity LIKE ? OR rarity LIKE ?)
+        AND id NOT IN (SELECT card_id FROM inventory WHERE user_id = ?)
+  """, (pat1, pat2, target_uid))
+  available_cards = cur.fetchall()
+
+  if not available_cards:
+    await callback.answer()
+    return await callback.message.reply("🚫 **У ВАС УЖЕ ИМЕЕТСЯ ВСЯ ТЕХНИКА ДАННОЙ РЕДКОСТИ**", parse_mode="Markdown")
+
+  if snowflakes < price:
+    need = price - snowflakes
+    return await callback.answer(f"❌ Не хватает снежинок! Нужно ещё {need:,} ❄️".replace(",", " "), show_alert=True)
+
+  chosen = random.choice(available_cards)
+  cid, name, nation, rarity, pts, file_id = chosen
+
+  cur.execute("UPDATE users SET snowflakes = snowflakes - ? WHERE user_id = ?", (price, target_uid))
+  cur.execute("INSERT INTO inventory (user_id, card_id) VALUES (?, ?)", (target_uid, cid))
+  conn.commit()
+
+  new_text, new_kb = build_event_menu(target_uid)
+  await callback.message.edit_text(new_text, reply_markup=new_kb, parse_mode="Markdown")
+
+  caption = (
+      f"{title}\n\n"
+      f"🚜 **Техника:** {name}\n"
+      f"🌍 **Нация:** {nation}\n"
+      f"✨ **Редкость:** {rarity}\n"
+      f"🏆 **Ценность:** {pts} очк.\n"
+      f"❄️ **Потрачено:** -{price:,} снежинок"
+  ).replace(",", " ")
+
+  await callback.message.answer_photo(photo=file_id, caption=caption, parse_mode="Markdown")
+  await callback.answer()
+
+def build_melt_list(uid: int, page: int = 0):
+  cur.execute("""
+      SELECT c.id, c.name, c.nation, c.points, COUNT(i.card_id) - 1 AS dupes
+      FROM inventory i JOIN cards c ON i.card_id = c.id
+      WHERE i.user_id = ?
+      GROUP BY c.id
+      HAVING COUNT(i.card_id) > 1
+      ORDER BY c.points DESC, c.id ASC
+  """, (uid,))
+  rows = cur.fetchall()
+
+  if not rows:
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Вернуться в профиль", callback_data=f"hangar_back:{uid}")]
+    ])
+    return "♻️ **Обмен повторок на снежинки**\n\nУ вас пока нет дубликатов техники (в ангаре остаётся минимум 1 экземпляр каждого танка).", kb
+
+  per_page = 10
+  total_pages = (len(rows) - 1) // per_page + 1
+  page = max(0, min(page, total_pages - 1))
+  start = page * per_page
+  chunk = rows[start:start + per_page]
+
+  lines = []
+  kb_rows = []
+  temp_row = []
+
+  for idx, (cid, name, nation, pts, dupes) in enumerate(chunk, start=start + 1):
+    lines.append(f"{idx}. **{name}** [{nation}] — дублей: **{dupes} шт.** ({pts} ❄️/шт.)")
+    btn_text = name if len(name) <= 16 else name[:14] + ".."
+    temp_row.append(InlineKeyboardButton(text=f"♻️ {btn_text} ({dupes})", callback_data=f"melt_pick:{uid}:{cid}:{page}"))
+    if len(temp_row) == 2:
+      kb_rows.append(temp_row)
+      temp_row = []
+
+  if temp_row:
+    kb_rows.append(temp_row)
+
+  nav_buttons = []
+  if page > 0:
+    nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"melt_list:{uid}:{page - 1}"))
+  if page < total_pages - 1:
+    nav_buttons.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"melt_list:{uid}:{page + 1}"))
+  if nav_buttons:
+    kb_rows.append(nav_buttons)
+
+  kb_rows.append([InlineKeyboardButton(text="🔙 Вернуться в профиль", callback_data=f"hangar_back:{uid}")])
+  kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+  text = (
+      f"♻️ **Обмен повторок на снежинки** (Стр. {page + 1}/{total_pages})\n"
+      f"Выберите технику, дубликаты которой хотите обменять:\n\n" + "\n".join(lines)
+  )
+  return text, kb
+
+def build_melt_pick(uid: int, cid: int, page: int = 0):
+  cur.execute("""
+      SELECT c.name, c.nation, c.rarity, c.points, COUNT(i.card_id) - 1 AS dupes
+      FROM inventory i JOIN cards c ON i.card_id = c.id
+      WHERE i.user_id = ? AND c.id = ?
+      GROUP BY c.id
+  """, (uid, cid))
+  row = cur.fetchone()
+
+  if not row:
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 К списку повторок", callback_data=f"melt_list:{uid}:{page}")]
+    ])
+    return "❌ Карточка не найдена.", kb
+
+  name, nation, rarity, pts, dupes = row
+  if dupes <= 0:
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 К списку повторок", callback_data=f"melt_list:{uid}:{page}")]
+    ])
+    return f"✅ У танка **{name}** больше не осталось повторок (последний экземпляр сохранён в ангаре).", kb
+
+  kb_rows = [
+      [InlineKeyboardButton(text=f"♻️ Обменять 1 шт. (+{pts:,} ❄️)".replace(",", " "), callback_data=f"melt_do:{uid}:{cid}:1:{page}")]
+  ]
+  if dupes >= 5:
+    kb_rows.append([InlineKeyboardButton(text=f"♻️ Обменять 5 шт. (+{pts * 5:,} ❄️)".replace(",", " "), callback_data=f"melt_do:{uid}:{cid}:5:{page}")])
+  if dupes > 1:
+    kb_rows.append([InlineKeyboardButton(text=f"🔥 Обменять ВСЕ {dupes} шт. (+{pts * dupes:,} ❄️)".replace(",", " "), callback_data=f"melt_do:{uid}:{cid}:{dupes}:{page}")])
+
+  kb_rows.append([InlineKeyboardButton(text="🔙 К списку повторок", callback_data=f"melt_list:{uid}:{page}")])
+  kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+  text = (
+      f"♻️ **Обмен дубликатов**\n\n"
+      f"🚜 **Техника:** {name} [{nation}]\n"
+      f"✨ **Редкость:** {rarity}\n"
+      f"📦 **Доступно повторок:** {dupes} шт. *(+1 оригинал в ангаре)*\n"
+      f"❄️ **Цена за 1 повторку:** {pts:,} снежинок\n\n"
+      f"Выберите, сколько штук обменять:"
+  ).replace(",", " ")
+  return text, kb
+
+@dp.message(Command("melt"))
+@dp.message(F.text.lower().in_({"обмен", "повторки", "обменять"}))
+async def cmd_melt(message: Message):
+  uid = message.from_user.id
+  register_user(uid, message.from_user.first_name)
+  text, kb = build_melt_list(uid, 0)
+  await message.reply(text, reply_markup=kb, parse_mode="Markdown")
+
+@dp.callback_query(F.data.startswith("melt_list:"))
+async def cb_melt_list(callback: CallbackQuery):
+  _, target_uid_str, page_str = callback.data.split(":")
+  target_uid = int(target_uid_str)
+  if callback.from_user.id != target_uid:
+    return await callback.answer("Это ангар другого игрока!", show_alert=True)
+
+  text, kb = build_melt_list(target_uid, int(page_str))
+  await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+  await callback.answer()
+
+@dp.callback_query(F.data.startswith("melt_pick:"))
+async def cb_melt_pick(callback: CallbackQuery):
+  _, target_uid_str, cid_str, page_str = callback.data.split(":")
+  target_uid = int(target_uid_str)
+  if callback.from_user.id != target_uid:
+    return await callback.answer("Это ангар другого игрока!", show_alert=True)
+
+  text, kb = build_melt_pick(target_uid, int(cid_str), int(page_str))
+  await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+  await callback.answer()
+
+@dp.callback_query(F.data.startswith("melt_do:"))
+async def cb_melt_do(callback: CallbackQuery):
+  _, target_uid_str, cid_str, count_str, page_str = callback.data.split(":")
+  target_uid = int(target_uid_str)
+  if callback.from_user.id != target_uid:
+    return await callback.answer("Это ангар другого игрока!", show_alert=True)
+
+  cid = int(cid_str)
+  req_count = int(count_str)
+  page = int(page_str)
+
+  cur.execute("SELECT COUNT(*), MAX(c.points) FROM inventory i JOIN cards c ON i.card_id = c.id WHERE i.user_id = ? AND c.id = ?", (target_uid, cid))
+  row = cur.fetchone()
+  total_owned, pts = row if row and row else (0, 0)
+  dupes = max(0, total_owned - 1)
+
+  if dupes <= 0 or req_count <= 0:
+    return await callback.answer("❌ Нет доступных повторок для обмена!", show_alert=True)
+
+  actual_count = min(req_count, dupes)
+  snow_earned = actual_count * pts
+
+  # Удаляем ровно actual_count записей этого танка из инвентаря пользователя
+  cur.execute("""
+      DELETE FROM inventory
+      WHERE rowid IN (
+          SELECT rowid FROM inventory
+          WHERE user_id = ? AND card_id = ?
+          LIMIT ?
+      )
+  """, (target_uid, cid, actual_count))
+  cur.execute("UPDATE users SET snowflakes = COALESCE(snowflakes, 0) + ? WHERE user_id = ?", (snow_earned, target_uid))
+  conn.commit()
+
+  text, kb = build_melt_pick(target_uid, cid, page)
+  await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+  await callback.answer(f"✅ Обменяно {actual_count} шт. на +{snow_earned:,} ❄️!".replace(",", " "), show_alert=True)
 
 
 async def main():
